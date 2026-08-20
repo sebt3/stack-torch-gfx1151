@@ -1264,6 +1264,16 @@ build_aocl_utils() {
 build_aocl_libm() {
     log_step 6 "Build AOCL-LibM (Zen 5 optimized transcendentals)"
 
+    # THEROCK_CI_NO_GPU=1 doesn't apply here (this is CPU, not GPU), but
+    # THEROCK_CI_GENERIC_CPU=1 does: AOCL-LibM's AVX-512 code paths are
+    # baked into its own source, not just compile flags we could strip -
+    # nothing links it under generic-CPU mode (see vllm-env.sh), so building
+    # it at all is wasted CI time on a library about to sit unused.
+    if [[ "${THEROCK_CI_GENERIC_CPU:-0}" == "1" ]]; then
+        info "THEROCK_CI_GENERIC_CPU=1: skipping AOCL-LibM (unused - nothing links it in this mode)"
+        return 0
+    fi
+
     if should_skip_step aocl_libm; then return; fi
 
     if [[ ! -d "${AOCL_LIBM_SRC}/.git" ]]; then

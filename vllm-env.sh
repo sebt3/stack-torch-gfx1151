@@ -45,9 +45,17 @@ export LEMONADE_SRC="${VLLM_DIR}/lemonade"
 _LOCAL_PREFIX="${VLLM_DIR}/local"
 
 # AOCL-LibM provides Zen 5 optimized transcendental functions (exp, log, sin, etc.)
-# that replace glibc libm. Built with AVX-512 paths for native 512-bit execution.
+# that replace glibc libm. Built with AVX-512 paths for native 512-bit execution -
+# not just compiled with AVX-512 flags we could strip, but AVX-512 code paths
+# baked into the library's own source. Unconditionally SIGILL'd every host
+# tool that linked it on generic CI hardware (Python's own _freeze_module,
+# built and immediately run as part of `make profile-opt`, was the one that
+# finally surfaced it: "Illegal instruction (core dumped)"). Skip linking it
+# entirely under THEROCK_CI_GENERIC_CPU - glibc's plain libm covers the same
+# functions, just without the Zen-specific speedup this pipeline's native/
+# local build case cares about.
 _AOCL_LDFLAGS=""
-if [[ -f "${_LOCAL_PREFIX}/lib/libalm.so" ]]; then
+if [[ -f "${_LOCAL_PREFIX}/lib/libalm.so" && "${THEROCK_CI_GENERIC_CPU:-0}" != "1" ]]; then
     _AOCL_LDFLAGS="-L${_LOCAL_PREFIX}/lib -lalm"
 fi
 
