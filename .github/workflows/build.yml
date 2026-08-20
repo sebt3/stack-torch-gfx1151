@@ -171,6 +171,7 @@ jobs:
         NO_AVX2: "1"
         USE_FBGEMM: "0"
         USE_SYSTEM_SLEEF: "1"
+        THEROCK_CI_NO_GPU: "1"
       run: timeout 345m ./build-vllm.sh --step 5 || true
 
     - name: Check build completed
