@@ -116,6 +116,18 @@ jobs:
         restore-keys: |
           stack-torch-build-${{ hashFiles('vllm-packages.yaml', 'patches/*.patch') }}-
 
+    # On a resumed run (cache restored), main() in build-vllm.sh silently
+    # skips venv creation ("if [[ ! -d VLLM_VENV ]]") without ever sourcing
+    # activate - the script then exits almost instantly with zero output
+    # beyond the prerequisite checks and no error, no crash trace (root
+    # cause not fully nailed down, but this is the one conditional block
+    # that behaves differently between a fresh and a resumed run).
+    # Recreating the venv is cheap - deleting just this directory instead
+    # of the whole cache preserves the expensive parts (the torch wheel
+    # build already completed once).
+    - name: Force fresh venv on resume (works around a silent-exit bug)
+      run: rm -rf /opt/src/vllm/.venv
+
     # --step 5 skips TheRock (steps 1-4, replaced above by the fetched
     # artifact) and starts at build_aocl_utils. total_steps in
     # vllm-packages.yaml is capped at 32 (export_source_wheels), stopping
