@@ -1,15 +1,9 @@
 name: Build vLLM stack (torch/triton/vLLM/AITER)
 
 on:
-  workflow_dispatch:
-    inputs:
-      therock_release_tag:
-        description: >
-          Release tag to fetch from sebt3/therock-gfx1151 (leave empty for
-          "latest"). Set this explicitly once you know which ROCm build you
-          want to pin against.
-        required: false
-        default: ""
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -70,25 +64,37 @@ jobs:
         mkdir -p /opt/src/vllm/local
 
     # This is the piece that replaces therock-gfx1151's steps 1-4: instead
-    # of building TheRock, fetch its released output tree directly. The
-    # release asset is the exact tarball validate_rocm()/skip_check expect
-    # (built via `tar czf ... -C /opt/src/vllm/local .`), so extracting it
-    # straight into LOCAL_PREFIX reproduces what steps 1-4 would have left
-    # behind, and --step 5 below skips those steps entirely.
-    - name: Fetch prebuilt ROCm SDK from sebt3/therock-gfx1151
+    # of building TheRock ourselves, install AMD's own official CI-built
+    # artifacts for the therock-7.14 tag commit (418cd5f) directly from
+    # their public S3 bucket (therock-ci-artifacts, anonymous access).
+    # Deliberately decoupled from sebt3/therock-gfx1151 — that repo (if/when
+    # it produces a real custom-patched build) is for behavior-changing
+    # patches later, not a prerequisite for this one. Component flags below
+    # mirror the THEROCK_ENABLE_* choices in therock-gfx1151's build-vllm.sh
+    # (media/profiler/rocalution/rocwmma/hiptensor/mpi off, blas/rand/prim/
+    # rccl/libhipcxx on — PyTorch's USE_RCCL=1 ABI needs rccl even though
+    # this is single-iGPU).
+    #
+    # therock_run_id pins the exact official CI run that built this tag
+    # (found via build_tools/find_artifacts_for_commit.py against
+    # ROCm/TheRock's own multi_arch_ci.yml workflow for commit 418cd5f).
+    - name: Fetch official ROCm 7.14 SDK (gfx1151) from ROCm/TheRock CI artifacts
+      env:
+        THEROCK_RUN_ID: "29052575219"
       run: |
         set -euo pipefail
-        TAG="${{ inputs.therock_release_tag }}"
-        if [ -z "$TAG" ]; then
-          API_URL="https://api.github.com/repos/sebt3/therock-gfx1151/releases/latest"
-        else
-          API_URL="https://api.github.com/repos/sebt3/therock-gfx1151/releases/tags/${TAG}"
-        fi
-        ASSET_URL="$(curl -fsSL "$API_URL" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["assets"][0]["browser_download_url"])')"
-        echo "Fetching ROCm SDK from: ${ASSET_URL}"
-        curl -fsSL "$ASSET_URL" -o /tmp/therock.tar.gz
-        tar xzf /tmp/therock.tar.gz -C /opt/src/vllm/local
-        rm /tmp/therock.tar.gz
+        pip3 install --break-system-packages --no-cache-dir boto3
+        git clone --depth 1 --branch therock-7.14 --filter=blob:none --sparse https://github.com/ROCm/TheRock.git /tmp/therock-tools
+        git -C /tmp/therock-tools sparse-checkout set build_tools
+        python3 /tmp/therock-tools/build_tools/install_rocm_from_artifacts.py \
+          --run-id "${THEROCK_RUN_ID}" \
+          --amdgpu-family gfx1151 \
+          --no-rocdecode --no-rocjpeg \
+          --no-rocprofiler-sdk --no-rocprofiler-compute --no-rocprofiler-systems --no-rocprofiler-systems-examples \
+          --no-rocalution --no-rocwmma --no-hiptensor \
+          --no-mpi --no-aqlprofile --no-hipdnn --no-hipdnn-integration-tests --no-hipdnn-samples \
+          --output-dir /opt/src/vllm/local
+        rm -rf /tmp/therock-tools
 
     # Mirrors validate_rocm()'s compiler symlink setup (step 4, which we
     # skip via --step 5 below) — downstream steps (PyTorch, Triton builds)

@@ -3,13 +3,21 @@
 Intermediate build of the PyTorch/Triton/vLLM/AITER stack for AMD Strix Halo
 (gfx1151), built from source against a prebuilt ROCm SDK.
 
-This repo does **not** build ROCm/TheRock itself — that's
-[`sebt3/therock-gfx1151`](https://github.com/sebt3/therock-gfx1151). This
-repo's CI fetches that repo's latest release tarball, extracts it as the
-ROCm SDK, and builds everything on top of it: AOCL-Utils/LibM, Python,
-PyTorch (ROCm fork), TorchVision, Triton (ROCm fork), AOTriton, vLLM,
-Flash Attention, and AITER — then publishes the resulting wheels as a
-release here.
+This repo does **not** build ROCm/TheRock itself. Its CI installs AMD's own
+official CI-built ROCm 7.14 SDK for gfx1151 directly from
+`ROCm/TheRock`'s public S3 artifact bucket (pinned to the exact CI run
+that produced the `therock-7.14` tag commit), then builds everything on
+top of it: AOCL-Utils/LibM, Python, PyTorch (ROCm fork), TorchVision,
+Triton (ROCm fork), AOTriton, vLLM, Flash Attention, and AITER — then
+publishes the resulting wheels as a release here.
+
+This is deliberately **not** wired to
+[`sebt3/therock-gfx1151`](https://github.com/sebt3/therock-gfx1151) (a
+from-source custom-patched ROCm build, for when a future patch actually
+changes runtime behavior rather than just fixing TheRock's own build
+process) — this repo doesn't need to wait on that one, since a vanilla
+official ROCm 7.14 is ABI-identical to our patched build for anything
+that's just a build-process fix.
 
 The llama.cpp/Lemonade phase of the underlying build pipeline is
 deliberately **not** run here (capped via `total_steps` in
@@ -17,11 +25,12 @@ deliberately **not** run here (capped via `total_steps` in
 
 The final consumer of this repo's releases is
 [`sebt3/vllm-gfx1151`](https://github.com/sebt3/vllm-gfx1151) (the actual
-runtime image), which assembles: this repo's wheels + therock-gfx1151's
-ROCm libs → final Docker image. Splitting the heavy from-source builds out
-this way means the image repo's own builds stay fast, and the two
-expensive pieces (ROCm SDK, torch/vLLM stack) are cached independently as
-GitHub Releases instead of being rebuilt on every image change.
+runtime image), which assembles: this repo's wheels + (optionally)
+therock-gfx1151's custom-patched ROCm libs → final Docker image.
+Splitting the heavy from-source builds out this way means the image
+repo's own builds stay fast, and the expensive torch/vLLM stack build is
+cached independently as a GitHub Release instead of being rebuilt on
+every image change.
 
 ## Build pipeline
 
