@@ -184,7 +184,14 @@ jobs:
         USE_FBGEMM: "0"
         USE_SYSTEM_SLEEF: "1"
         THEROCK_CI_NO_GPU: "1"
-      run: timeout 345m ./build-vllm.sh --step 5 || true
+      # --force-rebuild aocl_libm,cpython: these were built and cached in an
+      # earlier run, before THEROCK_CI_GENERIC_CPU existed - still carrying
+      # the Zen5/AVX flags. should_skip_step's existence-only check ("lib/
+      # libalm.so exists") can't tell a stale build from a correct one, so
+      # step 8 (create_venv) tried to actually run the cached, SIGILL-prone
+      # Python binary and crashed the same way protoc/mkrename did. Force
+      # both to rebuild once with the now-correct generic-CPU flags.
+      run: timeout 345m ./build-vllm.sh --step 5 --force-rebuild aocl_libm,cpython || true
 
     - name: Check build completed
       id: check
