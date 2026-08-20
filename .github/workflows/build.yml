@@ -142,10 +142,25 @@ jobs:
     # it. Sidestep entirely: use apt's protobuf-compiler (a normal,
     # conservatively-built Debian package) instead of building protoc from
     # source.
+    # NO_AVX2=1, USE_FBGEMM=0: the protobuf fix got much further (1015/7428
+    # vs ~656 before) but hit the *same* Illegal instruction signature in a
+    # completely unrelated vendored tool - SLEEF's mkrename codegen utility,
+    # generating AVX/AVX2/AVX128 header variants ("Illegal instruction (core
+    # dumped)" x3, sleeflibm_AVX2128.h.tmp/AVX2.h.tmp/AVX.h.tmp). This is a
+    # second independent hit of the same GH-runner-fleet AVX inconsistency
+    # (actions/runner-images#3389) in a totally different codebase, so
+    # per-tool substitution doesn't scale - go broader instead: don't build
+    # the AVX-family CPU capability tiers at all. fbgemm hard-requires AVX2
+    # (a known standalone crash source per pytorch/pytorch build reports for
+    # non-AVX2 hosts). None of this affects gfx1151 runtime perf - real
+    # inference compute happens on the GPU via HIP kernels, not these
+    # host-CPU vectorized math paths.
     - name: Build torch/triton/vLLM/AITER
       env:
         THEROCK_CI_GENERIC_CPU: "1"
         BUILD_CUSTOM_PROTOBUF: "0"
+        NO_AVX2: "1"
+        USE_FBGEMM: "0"
       run: timeout 345m ./build-vllm.sh --step 5 || true
 
     - name: Check build completed
