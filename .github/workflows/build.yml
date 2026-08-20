@@ -1,0 +1,138 @@
+name: Build vLLM stack (torch/triton/vLLM/AITER)
+
+on:
+  workflow_dispatch:
+    inputs:
+      therock_release_tag:
+        description: >
+          Release tag to fetch from sebt3/therock-gfx1151 (leave empty for
+          "latest"). Set this explicitly once you know which ROCm build you
+          want to pin against.
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Same rationale as therock-gfx1151: GitHub's hard cap is 6h, and this
+    # build (PyTorch + Triton + vLLM + AITER from source) won't fit in one
+    # run. actions/cache + should_skip_step lets a re-triggered run resume.
+    timeout-minutes: 360
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Free up runner disk space
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        swap-storage: false
+
+    - name: Get version
+      id: version
+      run: echo "tag=$(cat .tags)" >> $GITHUB_OUTPUT
+
+    - name: Install build prerequisites
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq \
+          ca-certificates curl git gnupg software-properties-common \
+          clang lld cmake ninja-build gfortran patchelf automake libtool libtool-bin \
+          bison flex xxd scons meson \
+          libvulkan-dev mesa-vulkan-drivers python3-dev python3-pip python3-venv \
+          build-essential lsb-release procps \
+          libgl1-mesa-dev libglx-dev libopengl-dev libsqlite3-dev
+
+    - name: Install Clang 21 (TheRock/vLLM build requires >= 21)
+      run: |
+        curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+        sudo bash /tmp/llvm.sh 21
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-21 210
+        sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-21 210
+        sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-21 210
+        sudo update-alternatives --set clang /usr/bin/clang-21
+        sudo update-alternatives --set clang++ /usr/bin/clang++-21
+        sudo update-alternatives --set lld /usr/bin/lld-21
+
+    - name: Install lit (LLVM Integrated Tester)
+      run: pip3 install --break-system-packages --no-cache-dir lit
+
+    - name: Prepare VLLM_DIR
+      run: |
+        sudo mkdir -p /opt/src/vllm
+        sudo chown "$(id -u):$(id -g)" /opt/src/vllm
+        mkdir -p /opt/src/vllm/local
+
+    # This is the piece that replaces therock-gfx1151's steps 1-4: instead
+    # of building TheRock, fetch its released output tree directly. The
+    # release asset is the exact tarball validate_rocm()/skip_check expect
+    # (built via `tar czf ... -C /opt/src/vllm/local .`), so extracting it
+    # straight into LOCAL_PREFIX reproduces what steps 1-4 would have left
+    # behind, and --step 5 below skips those steps entirely.
+    - name: Fetch prebuilt ROCm SDK from sebt3/therock-gfx1151
+      run: |
+        set -euo pipefail
+        TAG="${{ inputs.therock_release_tag }}"
+        if [ -z "$TAG" ]; then
+          API_URL="https://api.github.com/repos/sebt3/therock-gfx1151/releases/latest"
+        else
+          API_URL="https://api.github.com/repos/sebt3/therock-gfx1151/releases/tags/${TAG}"
+        fi
+        ASSET_URL="$(curl -fsSL "$API_URL" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["assets"][0]["browser_download_url"])')"
+        echo "Fetching ROCm SDK from: ${ASSET_URL}"
+        curl -fsSL "$ASSET_URL" -o /tmp/therock.tar.gz
+        tar xzf /tmp/therock.tar.gz -C /opt/src/vllm/local
+        rm /tmp/therock.tar.gz
+
+    # Mirrors validate_rocm()'s compiler symlink setup (step 4, which we
+    # skip via --step 5 below) — downstream steps (PyTorch, Triton builds)
+    # look for `cc`/`c++` on PATH and expect them to resolve to amdclang.
+    - name: Recreate ROCm compiler symlinks
+      run: |
+        LLVM_BIN=/opt/src/vllm/local/lib/llvm/bin
+        [ -x "${LLVM_BIN}/amdclang" ] || { echo "::error::amdclang not found after extracting ROCm SDK"; exit 1; }
+        [ -e "${LLVM_BIN}/cc" ]  || ln -s amdclang "${LLVM_BIN}/cc"
+        [ -e "${LLVM_BIN}/c++" ] || ln -s amdclang++ "${LLVM_BIN}/c++"
+
+    - name: Cache build tree
+      uses: actions/cache@v4
+      with:
+        path: /opt/src/vllm
+        key: stack-torch-build-${{ hashFiles('vllm-packages.yaml', 'patches/*.patch') }}-${{ github.run_id }}
+        restore-keys: |
+          stack-torch-build-${{ hashFiles('vllm-packages.yaml', 'patches/*.patch') }}-
+
+    # --step 5 skips TheRock (steps 1-4, replaced above by the fetched
+    # artifact) and starts at build_aocl_utils. total_steps in
+    # vllm-packages.yaml is capped at 32 (export_source_wheels), stopping
+    # before the llama.cpp/Lemonade phase (33-36) which this repo does not
+    # build. Leaves ~15min margin under the 6h cap for cache-save.
+    - name: Build torch/triton/vLLM/AITER
+      run: timeout 345m ./build-vllm.sh --step 5 || true
+
+    - name: Check build completed
+      id: check
+      run: |
+        if ls /opt/src/vllm/wheels/vllm-*.whl >/dev/null 2>&1; then
+          echo "done=true" >> $GITHUB_OUTPUT
+        else
+          echo "done=false" >> $GITHUB_OUTPUT
+          echo "::warning::Build did not finish in this run; re-run the workflow to resume from cache."
+        fi
+
+    - name: Package
+      if: steps.check.outputs.done == 'true'
+      run: tar czf stack-torch-gfx1151-${{ steps.version.outputs.tag }}.tar.gz -C /opt/src/vllm wheels
+
+    - name: Publish release
+      if: steps.check.outputs.done == 'true'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.version.outputs.tag }}
+        files: stack-torch-gfx1151-${{ steps.version.outputs.tag }}.tar.gz
