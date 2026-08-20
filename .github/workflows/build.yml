@@ -42,7 +42,7 @@ jobs:
           libvulkan-dev mesa-vulkan-drivers python3-dev python3-pip python3-venv \
           build-essential lsb-release procps \
           libgl1-mesa-dev libglx-dev libopengl-dev libsqlite3-dev libdrm-dev \
-          protobuf-compiler libprotobuf-dev
+          protobuf-compiler libprotobuf-dev libsleef-dev
 
     - name: Install Clang 21 (TheRock/vLLM build requires >= 21)
       run: |
@@ -155,12 +155,22 @@ jobs:
     # non-AVX2 hosts). None of this affects gfx1151 runtime perf - real
     # inference compute happens on the GPU via HIP kernels, not these
     # host-CPU vectorized math paths.
+    # USE_SYSTEM_SLEEF=1: NO_AVX2 didn't stop SLEEF's own build from trying
+    # to generate all 4 header variants (AVX2, AVX, AVX512F, AVX2128) via
+    # mkrename regardless - same crash, unaffected. mkrename is a generic
+    # C header-rename generator with no inherent SIMD need of its own; it
+    # crashing points at SLEEF's *own* internal CPU-capability compile
+    # probes accepting -mavx2/-mavx512f because cpuid reports them, not at
+    # anything our global CFLAGS reach (same class of problem as protobuf,
+    # different codebase). Sidestep the same way: apt's libsleef-dev
+    # instead of building SLEEF from source at all.
     - name: Build torch/triton/vLLM/AITER
       env:
         THEROCK_CI_GENERIC_CPU: "1"
         BUILD_CUSTOM_PROTOBUF: "0"
         NO_AVX2: "1"
         USE_FBGEMM: "0"
+        USE_SYSTEM_SLEEF: "1"
       run: timeout 345m ./build-vllm.sh --step 5 || true
 
     - name: Check build completed
