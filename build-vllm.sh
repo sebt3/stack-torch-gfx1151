@@ -1939,6 +1939,16 @@ with zipfile.ZipFile('${_torch_wheel}', 'w', zipfile.ZIP_DEFLATED) as zf:
 validate_pytorch() {
     log_step 11 "Validate PyTorch GPU access"
 
+    # THEROCK_CI_NO_GPU=1: GH-hosted CI runners have no AMD GPU at all -
+    # this check can only ever fail there, and it's not a build defect (the
+    # wheel built successfully; it just can't be exercised without real
+    # hardware). Real GPU validation happens downstream when the produced
+    # wheel is installed on gfx1151 hardware. Skip rather than die().
+    if [[ "${THEROCK_CI_NO_GPU:-0}" == "1" ]]; then
+        warn "THEROCK_CI_NO_GPU=1: skipping GPU validation (no GPU on this runner)"
+        return 0
+    fi
+
     local _torch_validate_log
     _torch_validate_log="$(mktemp)"
     local _validate_cmd
@@ -3986,6 +3996,18 @@ except ImportError as e:
 # that RDNA 3.5 doesn't have and would never be called at runtime.
 warmup_aiter_jit() {
     log_step 29 "Pre-warm AITER JIT modules"
+
+    # THEROCK_CI_NO_GPU=1: this step is a pure runtime-JIT-cache
+    # optimization (comment above: ~1h42min on first run) - it doesn't
+    # affect whether the wheels themselves are valid or complete, and
+    # module compilation/JIT here is meant to run against real gfx1151
+    # hardware, which CI doesn't have. Skip rather than burn CI budget on
+    # an optimization irrelevant to what this repo actually needs to
+    # produce (installable wheels).
+    if [[ "${THEROCK_CI_NO_GPU:-0}" == "1" ]]; then
+        warn "THEROCK_CI_NO_GPU=1: skipping AITER JIT pre-warm (no GPU on this runner)"
+        return 0
+    fi
 
     # Skip if AITER is not enabled
     local aiter_status
