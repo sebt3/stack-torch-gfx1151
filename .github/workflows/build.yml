@@ -120,17 +120,19 @@ jobs:
     # vllm-packages.yaml is capped at 32 (export_source_wheels), stopping
     # before the llama.cpp/Lemonade phase (33-36) which this repo does not
     # build. Leaves ~15min margin under the 6h cap for cache-save.
-    # -mno-avx512f: GH-hosted runners' virtualized CPUs report AVX512
-    # support via cpuid that isn't reliably usable at runtime - hit this
-    # directly (protoc, freshly built moments earlier, SIGILL'd generating
-    # onnx protos: "Illegal instruction (core dumped)"). Not relevant to
-    # gfx1151 codegen at all (that's HIP device code, compiled separately
-    # by amdclang) - this only affects host-side x86 tool builds like
-    # protobuf/XNNPACK's CPU kernels.
+    #
+    # THEROCK_CI_GENERIC_CPU=1: vllm-env.sh (sourced inside build-vllm.sh)
+    # unconditionally forces -march=native -mavx512f/-mavx512dq/-mavx512vl/
+    # -mavx512bw for the original Zen 5 dev box, via CMAKE_C_FLAGS_RELEASE -
+    # a plain job-level CFLAGS override here has no effect since cmake
+    # ignores bare CFLAGS and vllm-env.sh's export happens later anyway.
+    # This tripped a deterministic protoc SIGILL ("Illegal instruction (core
+    # dumped)") building onnx protos, reproduced on multiple clean builds -
+    # GH-hosted runners' virtualized CPUs report AVX512 via cpuid but it
+    # isn't reliably usable at runtime. See vllm-env.sh for the actual gate.
     - name: Build torch/triton/vLLM/AITER
       env:
-        CFLAGS: "-mno-avx512f"
-        CXXFLAGS: "-mno-avx512f"
+        THEROCK_CI_GENERIC_CPU: "1"
       run: timeout 345m ./build-vllm.sh --step 5 || true
 
     - name: Check build completed

@@ -135,7 +135,20 @@ fi
 #                             -mllvm flags passed through to link steps or translation
 #                             units where they don't apply (e.g. googletest, mbedTLS).
 #                             Previously -Wno-error=... (non-fatal but still printed).
-_BASE_CFLAGS="-O3 -DNDEBUG -march=native -flto=thin -mprefer-vector-width=512 -mavx512f -mavx512dq -mavx512vl -mavx512bw ${_AMD_OPT} ${_POLLY_FLAGS} -mllvm -inline-threshold=600 -mllvm -unroll-threshold=150 -mllvm -adce-remove-loops -Wno-unused-command-line-argument"
+#
+# THEROCK_CI_GENERIC_CPU: set on shared/cloud CI runners (not the Zen 5 dev
+# box these flags target). GH-hosted runners' virtualized CPUs report AVX512
+# via cpuid but it isn't reliably usable at runtime - hit this directly
+# (protoc SIGILL'd: "Illegal instruction (core dumped)" generating onnx
+# protos, deterministic across multiple clean builds). -march=native on an
+# unknown/virtualized host is also unsafe for the same reason. This only
+# affects host-side x86 tool builds (protobuf, XNNPACK's CPU kernels) - HIP
+# device code for gfx1151 is compiled separately by amdclang, unaffected.
+if [[ "${THEROCK_CI_GENERIC_CPU:-0}" == "1" ]]; then
+    _BASE_CFLAGS="-O3 -DNDEBUG ${_POLLY_FLAGS} -mllvm -inline-threshold=600 -mllvm -unroll-threshold=150 -mllvm -adce-remove-loops -Wno-unused-command-line-argument"
+else
+    _BASE_CFLAGS="-O3 -DNDEBUG -march=native -flto=thin -mprefer-vector-width=512 -mavx512f -mavx512dq -mavx512vl -mavx512bw ${_AMD_OPT} ${_POLLY_FLAGS} -mllvm -inline-threshold=600 -mllvm -unroll-threshold=150 -mllvm -adce-remove-loops -Wno-unused-command-line-argument"
+fi
 _BASE_LDFLAGS="-flto=thin -fuse-ld=lld -Wl,-rpath,${_LOCAL_PREFIX}/lib ${_AOCL_LDFLAGS}"
 
 # Autotools / setup.py: read CFLAGS, CXXFLAGS, LDFLAGS from environment.
