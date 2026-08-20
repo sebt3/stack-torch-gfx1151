@@ -1212,6 +1212,17 @@ generate_env_file() {
 build_aocl_utils() {
     log_step 5 "Build AOCL-Utils (CPU feature detection for Zen 5)"
 
+    # THEROCK_CI_GENERIC_CPU=1: exists solely to support AOCL-LibM (its only
+    # consumer in this pipeline - see build_aocl_libm()'s --aocl_utils_*
+    # flags), which is itself skipped entirely in generic mode. Its own
+    # build also hardcodes -mavx512f/-famd-opt independent of vllm-env.sh
+    # (same class of bug just fixed in build_python()) - skip rather than
+    # fix flags for a library nothing will use.
+    if [[ "${THEROCK_CI_GENERIC_CPU:-0}" == "1" ]]; then
+        info "THEROCK_CI_GENERIC_CPU=1: skipping AOCL-Utils (only consumer, AOCL-LibM, is also skipped)"
+        return 0
+    fi
+
     if should_skip_step aocl_utils; then return; fi
 
     if [[ ! -d "${AOCL_UTILS_SRC}/.git" ]]; then
@@ -4644,6 +4655,18 @@ capture { print }
 # Step 30: Build Rust optimized wheels (orjson, cryptography)
 build_rust_wheels() {
     log_step 30 "Build Rust optimized wheels (orjson, cryptography)"
+
+    # THEROCK_CI_GENERIC_CPU=1: RUSTFLAGS from vllm-env.sh is hardcoded to
+    # "-C target-cpu=znver5" (Zen 5 specific, same class of problem already
+    # fixed elsewhere) with no generic-mode gate of its own, and the Rust
+    # toolchain isn't installed on this CI runner anyway (would die() on
+    # the very next check). These are pure performance-optimized rebuilds
+    # of packages regular pip already installs correctly via
+    # install_rocm_requirements - skip, not required for valid wheels.
+    if [[ "${THEROCK_CI_GENERIC_CPU:-0}" == "1" ]]; then
+        info "THEROCK_CI_GENERIC_CPU=1: skipping Rust-optimized wheel rebuilds (not needed for valid wheels)"
+        return 0
+    fi
 
     mkdir -p "${WHEELS_DIR}"
 
