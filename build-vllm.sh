@@ -1387,19 +1387,39 @@ build_python() {
     unset CFLAGS CXXFLAGS LDFLAGS CMAKE_C_FLAGS_RELEASE CMAKE_CXX_FLAGS_RELEASE \
           CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS
 
+    # THEROCK_CI_GENERIC_CPU=1: this ./configure call has its own hardcoded
+    # -march=native/-famd-opt/LTO flags, entirely independent of
+    # vllm-env.sh's _BASE_CFLAGS (which the THEROCK_CI_GENERIC_CPU gate
+    # there controls) - none of that gate's earlier fixes (AOCL-LibM,
+    # Polly, LTO) touched this at all, which is why CPython's own
+    # Programs/_freeze_module kept SIGILL'ing identically across every one
+    # of those. Found by finally reading this function instead of guessing
+    # at vllm-env.sh flags again. Also drop --with-lto=thin/PGO's own LTO
+    # use here for the same generic-host caution as vllm-env.sh.
+    local _cpython_cflags _cpython_ldflags _cpython_lto_arg
+    if [[ "${THEROCK_CI_GENERIC_CPU:-0}" == "1" ]]; then
+        _cpython_cflags="-O3 -Wno-unused-command-line-argument -fPIC"
+        _cpython_ldflags="-fuse-ld=lld -Wl,-rpath,${LOCAL_PREFIX}/lib"
+        _cpython_lto_arg=""
+    else
+        _cpython_cflags="-O3 -march=native -famd-opt -Wno-unused-command-line-argument -fPIC"
+        _cpython_ldflags="-flto=thin -fuse-ld=lld -Wl,-rpath,${LOCAL_PREFIX}/lib"
+        _cpython_lto_arg="--with-lto=thin"
+    fi
+
     ./configure \
         --prefix="${LOCAL_PREFIX}" \
         --enable-optimizations \
-        --with-lto=thin \
+        ${_cpython_lto_arg} \
         --enable-shared \
         --with-computed-gotos \
         --with-system-expat \
         --with-ensurepip=upgrade \
         CC="${amdclang}" \
         CXX="${amdclangxx}" \
-        CFLAGS="-O3 -march=native -famd-opt -Wno-unused-command-line-argument -fPIC" \
-        CXXFLAGS="-O3 -march=native -famd-opt -Wno-unused-command-line-argument -fPIC" \
-        LDFLAGS="-flto=thin -fuse-ld=lld -Wl,-rpath,${LOCAL_PREFIX}/lib"
+        CFLAGS="${_cpython_cflags}" \
+        CXXFLAGS="${_cpython_cflags}" \
+        LDFLAGS="${_cpython_ldflags}"
 
     info "Building Python ${CPYTHON_VERSION} (PGO training + final build)..."
     info "This takes ~15-20 minutes due to PGO profiling pass."
