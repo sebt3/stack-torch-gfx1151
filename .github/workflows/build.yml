@@ -85,7 +85,7 @@ jobs:
         set -euo pipefail
         pip3 install --break-system-packages --no-cache-dir boto3
         git clone --depth 1 --branch therock-7.14 --filter=blob:none --sparse https://github.com/ROCm/TheRock.git /tmp/therock-tools
-        git -C /tmp/therock-tools sparse-checkout set build_tools
+        git -C /tmp/therock-tools sparse-checkout set build_tools cmake
         python3 /tmp/therock-tools/build_tools/install_rocm_from_artifacts.py \
           --run-id "${THEROCK_RUN_ID}" \
           --amdgpu-family gfx1151 \
