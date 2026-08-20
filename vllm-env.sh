@@ -153,11 +153,26 @@ fi
 # affects host-side x86 tool builds (protobuf, XNNPACK's CPU kernels) - HIP
 # device code for gfx1151 is compiled separately by amdclang, unaffected.
 if [[ "${THEROCK_CI_GENERIC_CPU:-0}" == "1" ]]; then
-    _BASE_CFLAGS="-O3 -DNDEBUG ${_POLLY_FLAGS} -mllvm -inline-threshold=600 -mllvm -unroll-threshold=150 -mllvm -adce-remove-loops -Wno-unused-command-line-argument"
+    # Dropped vs. the Zen 5 path below, not just -march/-mavx512*:
+    #   -flto=thin: LTO reordering/inlining across TUs is a plausible
+    #     vector for miscompilation on an unusual amdclang+lld host combo -
+    #     not proven, but removed out of caution after two rounds of "this
+    #     specific flag wasn't it either" on this exact class of bug.
+    #   Polly (-mllvm -polly...): loop-nest restructuring + its own
+    #     stripmine vectorizer. Its availability probe just checks the pass
+    #     exists in this clang, not that its vectorized output is safe to
+    #     execute here - and it's exactly this class of tool (own internal
+    #     codegen decisions, independent of the outer -march) that's bitten
+    #     us repeatedly (protoc, SLEEF's mkrename, now CPython's own
+    #     _freeze_module - none of which link AOCL-LibM, ruling that out as
+    #     the cause here). Root cause not fully isolated, but Polly is the
+    #     next-most-plausible native-tuning survivor in this list.
+    _BASE_CFLAGS="-O3 -DNDEBUG -mllvm -inline-threshold=600 -mllvm -unroll-threshold=150 -mllvm -adce-remove-loops -Wno-unused-command-line-argument"
+    _BASE_LDFLAGS="-fuse-ld=lld -Wl,-rpath,${_LOCAL_PREFIX}/lib ${_AOCL_LDFLAGS}"
 else
     _BASE_CFLAGS="-O3 -DNDEBUG -march=native -flto=thin -mprefer-vector-width=512 -mavx512f -mavx512dq -mavx512vl -mavx512bw ${_AMD_OPT} ${_POLLY_FLAGS} -mllvm -inline-threshold=600 -mllvm -unroll-threshold=150 -mllvm -adce-remove-loops -Wno-unused-command-line-argument"
+    _BASE_LDFLAGS="-flto=thin -fuse-ld=lld -Wl,-rpath,${_LOCAL_PREFIX}/lib ${_AOCL_LDFLAGS}"
 fi
-_BASE_LDFLAGS="-flto=thin -fuse-ld=lld -Wl,-rpath,${_LOCAL_PREFIX}/lib ${_AOCL_LDFLAGS}"
 
 # Autotools / setup.py: read CFLAGS, CXXFLAGS, LDFLAGS from environment.
 export CFLAGS="${_BASE_CFLAGS}"
