@@ -88,6 +88,7 @@ jobs:
         git -C /tmp/therock-tools sparse-checkout set build_tools cmake
         python3 /tmp/therock-tools/build_tools/install_rocm_from_artifacts.py \
           --run-id "${THEROCK_RUN_ID}" \
+          --run-github-repo ROCm/TheRock \
           --amdgpu-family gfx1151 \
           --no-rocdecode --no-rocjpeg \
           --no-rocprofiler-sdk --no-rocprofiler-compute --no-rocprofiler-systems --no-rocprofiler-systems-examples \
