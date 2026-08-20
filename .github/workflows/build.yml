@@ -41,7 +41,8 @@ jobs:
           bison flex xxd scons meson \
           libvulkan-dev mesa-vulkan-drivers python3-dev python3-pip python3-venv \
           build-essential lsb-release procps \
-          libgl1-mesa-dev libglx-dev libopengl-dev libsqlite3-dev libdrm-dev
+          libgl1-mesa-dev libglx-dev libopengl-dev libsqlite3-dev libdrm-dev \
+          protobuf-compiler libprotobuf-dev
 
     - name: Install Clang 21 (TheRock/vLLM build requires >= 21)
       run: |
@@ -126,13 +127,25 @@ jobs:
     # -mavx512bw for the original Zen 5 dev box, via CMAKE_C_FLAGS_RELEASE -
     # a plain job-level CFLAGS override here has no effect since cmake
     # ignores bare CFLAGS and vllm-env.sh's export happens later anyway.
-    # This tripped a deterministic protoc SIGILL ("Illegal instruction (core
-    # dumped)") building onnx protos, reproduced on multiple clean builds -
-    # GH-hosted runners' virtualized CPUs report AVX512 via cpuid but it
-    # isn't reliably usable at runtime. See vllm-env.sh for the actual gate.
+    # See vllm-env.sh for the actual gate.
+    #
+    # BUILD_CUSTOM_PROTOBUF=0: even with our own flags clean (verified: the
+    # actual CXX flags line logged no longer has -march=native/-mavx512*),
+    # PyTorch's *freshly-built, vendored* protoc still SIGILL'd identically
+    # ("Illegal instruction (core dumped)") generating onnx protos, three
+    # times across three separate runner instances - not our compile flags.
+    # This matches a documented, longstanding GitHub-acknowledged
+    # inconsistency in the runner fleet (actions/runner-images#3389: some
+    # hosts report AVX512 via cpuid without it being reliably usable), most
+    # likely hit via runtime cpuid dispatch inside protobuf/absl rather than
+    # anything decided by our own compile-time flags - so no CFLAGS fixes
+    # it. Sidestep entirely: use apt's protobuf-compiler (a normal,
+    # conservatively-built Debian package) instead of building protoc from
+    # source.
     - name: Build torch/triton/vLLM/AITER
       env:
         THEROCK_CI_GENERIC_CPU: "1"
+        BUILD_CUSTOM_PROTOBUF: "0"
       run: timeout 345m ./build-vllm.sh --step 5 || true
 
     - name: Check build completed
