@@ -1124,7 +1124,7 @@ packages:
   aotriton:
     repo: "https://github.com/ROCm/aotriton.git"
     branch: "main"
-    commit: "e71fc2a64cec741bf11c122ff97f4cca9fc7d0b7"
+    commit: "6e00ef3e335b45dfb49065259533b59c68995bfe"
     src_dir: "aotriton"
     method: cmake
     phase: D
@@ -1136,9 +1136,20 @@ packages:
       type: file_exists
       path: "lib/libaotriton_v2.so"
     notes: |
-      Pre-compiles Triton attention kernels to HSACO (ahead-of-time),
-      eliminating JIT compilation at inference time. v2 with Python
-      bindings. gfx1151 explicitly targeted via AOTRITON_TARGET_ARCH.
+      Builds only the C++ shim (AOTRITON_NOIMAGE_MODE=ON) - skips
+      compiling the ~22891 GPU kernel image objects from source entirely
+      (that pass alone would take many CI-hours: only ~1000 objects
+      landed in one multi-hour run before this approach was found).
+      Kernel images (.hsaco, pre-compiled ahead-of-time so there's no
+      JIT at inference time) come from AMD's own published release
+      instead: aotriton-<ver>-images-amd-gfx115x.tar.gz on
+      github.com/ROCm/aotriton/releases, matching the RDNA 3.5 family
+      gfx1151 belongs to. Commit pinned to the exact 0.13b tag (was 5
+      commits behind on main) so the kernel image format/signature is
+      guaranteed to match what that release published - AOTriton
+      validates a signature between the shim and the images at load
+      time, so a mismatched pair would fail instead of silently
+      misbehaving, but exact-version-match removes the question.
     patches:
       # 1. Remove stray rebase 'pick' line from CMakeLists.txt
       - type: sed

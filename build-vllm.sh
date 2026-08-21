@@ -2210,119 +2210,95 @@ except ImportError:
 }
 
 # Step 18: Build AOTriton
-build_aotriton() {
-    log_step 18 "Build AOTriton (pre-compiled attention kernels for gfx1151)"
 
-    cd "${AOTRITON_SRC}"
-
-
-    # Check if already built
-    if should_skip_step aotriton; then
-        cd "${VLLM_DIR}"
+# AOTriton's cmake install(DIRECTORY ...) rule (v3src/CMakeLists.txt) puts
+# kernel images under ${CMAKE_INSTALL_PREFIX}/lib/aotriton.images/<arch>/ -
+# the release tarball's internal layout (aotriton/lib/aotriton.images/<arch>/)
+# matches that exactly, so this is a straight copy once extracted.
+install_aotriton_images() {
+    local _arch_dir="${LOCAL_PREFIX}/lib/aotriton.images/amd-gfx115x"
+    if [[ -d "${_arch_dir}" ]] && [[ -n "$(ls -A "${_arch_dir}" 2>/dev/null)" ]]; then
+        info "AOTriton gfx115x kernel images already installed, skipping download"
         return
     fi
 
-    info "Building AOTriton for gfx1151..."
-    info "This pre-compiles Triton attention kernels to HSACO (no JIT at inference time)."
+    info "Fetching AOTriton 0.13b prebuilt kernel images (gfx115x family, covers gfx1151)..."
+    local _url="https://github.com/ROCm/aotriton/releases/download/0.13b/aotriton-0.13b-images-amd-gfx115x.tar.gz"
+    local _tmp_extract
+    _tmp_extract="$(mktemp -d)"
+    local _tmp_tar="${_tmp_extract}/aotriton-images-gfx115x.tar.gz"
+    curl -fL --retry 3 -o "${_tmp_tar}" "${_url}"
 
-    # Initialize submodules. AOTriton's build does `pip install .` in
-    # third_party/triton — the submodule must be checked out.
-    info "Synchronizing AOTriton submodules..."
-    git submodule sync --quiet
-    git submodule update --init --recursive
+    tar xzf "${_tmp_tar}" -C "${_tmp_extract}"
 
-    # Restore Triton submodules to clean state before patching. Previous
-    # build runs may have left sed-patches on setup.py / CMakeLists.txt.
-    # git checkout is idempotent and ensures patches apply to pristine files.
-    local _triton_dir="${AOTRITON_SRC}/third_party/triton"
-    git -C "${_triton_dir}" checkout -- setup.py CMakeLists.txt 2>/dev/null || true
-    git -C "${_triton_dir}/third_party/nvidia" checkout -- CMakeLists.txt 2>/dev/null || true
+    mkdir -p "${LOCAL_PREFIX}/lib/aotriton.images"
+    rm -rf "${_arch_dir}"
+    mv "${_tmp_extract}/aotriton/lib/aotriton.images/amd-gfx115x" "${_arch_dir}"
 
-    # Triton's setup.py hardcodes ["nvidia", "amd"] backends. We need both:
-    # - "amd" for AMD codegen (our target arch gfx1151)
-    # - "nvidia" because Triton core (lib/Dialect/TritonGPU/Transforms/) now
-    #   depends on the NVWS dialect from third_party/nvidia/ — its TableGen
-    #   .h.inc files are only generated when the nvidia backend is loaded.
-    # The GSan CUDA runtime (sm_80) is disabled separately below.
-    # Reorder to ["amd", "nvidia"] so AMD is the primary codegen backend.
-    local _triton_setup="${_triton_dir}/setup.py"
-    if [[ -f "${_triton_setup}" ]] && grep -q '"nvidia", "amd"' "${_triton_setup}"; then
-        info "Patching Triton setup.py: reorder backends to [\"amd\", \"nvidia\"]"
-        sed -i 's/\["nvidia", "amd"\]/["amd", "nvidia"]/' "${_triton_setup}"
+    rm -rf "${_tmp_tar}" "${_tmp_extract}"
+    success "AOTriton gfx115x kernel images installed"
+}
+
+build_aotriton() {
+    log_step 18 "Build AOTriton (C++ shim; kernel images fetched prebuilt, not compiled)"
+
+    cd "${AOTRITON_SRC}"
+
+    # Check if the shim is already built. Note this only covers
+    # libaotriton_v2.so - the kernel images are installed unconditionally
+    # below regardless of this check, since a prior run may have built the
+    # shim without yet having fetched the images (install_aotriton_images
+    # is itself idempotent, so this is cheap either way).
+    if should_skip_step aotriton; then
+        info "AOTriton shim already built, skipping compile"
     else
-        warn "Triton setup.py: expected '\"nvidia\", \"amd\"' not found (already patched?)"
+        info "Building AOTriton C++ shim for gfx1151 (AOTRITON_NOIMAGE_MODE=ON)..."
+
+        # Apply patches from YAML (remove stray rebase 'pick' line)
+        apply_patches aotriton "${AOTRITON_SRC}"
+
+        # Ensure vllm-env.sh flags are active (CC, CXX, etc.)
+        _vllm_source_env
+        if [[ -z "${CFLAGS:-}" ]] || [[ -z "${CMAKE_CXX_FLAGS_RELEASE:-}" ]]; then
+            die "CFLAGS or CMAKE_CXX_FLAGS_RELEASE not set — vllm-env.sh was not sourced"
+        fi
+        info "CC=${CC}"
+
+        # AOTRITON_NOIMAGE_MODE=ON: builds only the C++ shim
+        # (libaotriton_v2.so) and skips compiling Triton kernel images
+        # entirely - AOTriton's own CMakeLists.txt comment confirms the
+        # shim's code generator is triton-free by design, so noimage builds
+        # never touch third_party/triton at all (no submodule sync, no
+        # setup.py patching, no AOTRITON_USE_LOCAL_TRITON_WHEEL workaround
+        # needed - all of that only mattered for the from-source kernel
+        # build this replaces).
+        #
+        # That from-source kernel build compiles ~22891 objects (one per
+        # kernel/dtype/head-dim/causal/varlen/autotune-config combination);
+        # a multi-hour CI run landed only ~1000 of them before this
+        # approach was found - completing it that way wasn't a realistic
+        # path. install_aotriton_images() below fetches AMD's own published
+        # gfx115x images (pre-compiled .hsaco kernels) instead, from the
+        # exact 0.13b release this repo is now pinned to in
+        # vllm-packages.yaml (commit-exact match, since AOTriton signs the
+        # images against the shim's build and a mismatched pair could fail
+        # to load).
+        cmake -B build -GNinja . \
+            -DCMAKE_INSTALL_PREFIX="${LOCAL_PREFIX}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="${CC}" \
+            -DCMAKE_CXX_COMPILER="${CXX}" \
+            -DAOTRITON_NOIMAGE_MODE=ON \
+            -DAOTRITON_TARGET_ARCH="gfx1151"
+
+        ninja -C build install/strip
+        success "AOTriton C++ shim built"
     fi
 
-    # The GSan runtime in third_party/nvidia/CMakeLists.txt builds a CUDA
-    # kernel (gsan.ll for sm_80) requiring CUDA+GCC, not available on a
-    # ROCm-only system. Disable the GSan target — the rest of the nvidia
-    # backend (NVWS dialect, NVGPUToLLVM, etc.) is pure C++/MLIR and builds
-    # fine without CUDA.
-    local _nvidia_cmake="${_triton_dir}/third_party/nvidia/CMakeLists.txt"
-    if [[ -f "${_nvidia_cmake}" ]] && grep -q 'add_custom_target(TritonNVIDIAGSanRuntime ALL' "${_nvidia_cmake}"; then
-        info "Patching NVIDIA CMakeLists.txt: disable GSan runtime (CUDA-only)"
-        sed -i 's/add_custom_target(TritonNVIDIAGSanRuntime ALL/# Disabled on ROCm: add_custom_target(TritonNVIDIAGSanRuntime ALL/' "${_nvidia_cmake}"
-        sed -i 's/add_dependencies(TritonNVIDIA TritonNVIDIAGSanRuntime)/# Disabled on ROCm: add_dependencies(TritonNVIDIA TritonNVIDIAGSanRuntime)/' "${_nvidia_cmake}"
-    fi
-
-    # Reduce build scope: skip unit tests and disable LLVM werror.
-    # TRITON_APPEND_CMAKE_ARGS is read by setup.py and appended to the cmake
-    # invocation. This does not affect the AOTriton cmake build itself.
-    # -DTRITON_BUILD_UT=OFF: skip googletest download + compile.
-    # -DLLVM_ENABLE_WERROR=OFF: AOTriton's Triton overlay build fails 7× because
-    #   NVWS tablegen headers are never generated; -Werror turns warnings into
-    #   errors. Disabling WERROR avoids guaranteed failures (N7).
-    export TRITON_APPEND_CMAKE_ARGS="-DTRITON_BUILD_UT=OFF -DLLVM_ENABLE_WERROR=OFF"
-
-    # Apply patches from YAML (remove stray rebase 'pick' line)
-    apply_patches aotriton "${AOTRITON_SRC}"
-
-    # AOTriton's cmake-based build compiles Triton kernels ahead of time
-    # into .hsaco binaries for the target GPU architecture.
-    # AOTRITON_GPU_BUILD_TIMEOUT=0 disables the per-kernel timeout.
-    uv pip install -r requirements.txt 2>/dev/null || pip install -r requirements.txt
-
-    # Ensure vllm-env.sh flags are active (CC, CXX, AOTRITON_INSTALL_DIR, etc.)
-    _vllm_source_env
-    if [[ -z "${CFLAGS:-}" ]] || [[ -z "${CMAKE_CXX_FLAGS_RELEASE:-}" ]]; then
-        die "CFLAGS or CMAKE_CXX_FLAGS_RELEASE not set — vllm-env.sh was not sourced"
-    fi
-    info "CC=${CC}"
-    info "CFLAGS=${CFLAGS}"
-    info "CMAKE_CXX_FLAGS_RELEASE=${CMAKE_CXX_FLAGS_RELEASE}"
-
-    # AOTRITON_USE_LOCAL_TRITON_WHEEL: AOTriton's own third_party/triton
-    # subproject build hard-fails at cmake configure time -
-    # "MLIRConfig.cmake set MLIR_FOUND to FALSE... missing: LLVMNVPTXCodeGen
-    # LLVMNVPTXDesc LLVMNVPTXInfo" - Triton core (NVWS dialect TableGen)
-    # requires the nvidia backend even for AMD-only builds, but the
-    # prebuilt LLVM Triton's own build system downloads for this pin lacks
-    # NVPTX codegen. Root cause matches ROCm/aotriton#166 (CMAKE_PREFIX_PATH
-    # containing TheRock/ROCm confuses Triton's own find_package(MLIR)
-    # resolution when building as an AOTriton subproject) - the upstream-
-    # documented workaround is this flag, which skips AOTriton's own
-    # vendored triton build entirely and installs our already-built wheel
-    # (step 15 succeeded cleanly) instead.
-    local _triton_wheel_for_aotriton
-    _triton_wheel_for_aotriton="$(newest_wheel "${WHEELS_DIR}"/triton*.whl)"
-    if [[ -z "${_triton_wheel_for_aotriton}" ]]; then
-        die "No triton wheel found in ${WHEELS_DIR} for AOTRITON_USE_LOCAL_TRITON_WHEEL — run step 15 first"
-    fi
-    info "AOTRITON_USE_LOCAL_TRITON_WHEEL=${_triton_wheel_for_aotriton}"
-
-    cmake -B build -GNinja . \
-        -DCMAKE_INSTALL_PREFIX="${LOCAL_PREFIX}" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER="${CC}" \
-        -DCMAKE_CXX_COMPILER="${CXX}" \
-        -DAOTRITON_GPU_BUILD_TIMEOUT=0 \
-        -DAOTRITON_TARGET_ARCH="gfx1151" \
-        -DAOTRITON_USE_LOCAL_TRITON_WHEEL="${_triton_wheel_for_aotriton}"
-
-    ninja -C build install/strip
+    install_aotriton_images
 
     cd "${VLLM_DIR}"
-    success "AOTriton built (pre-compiled attention kernels for gfx1151)"
+    success "AOTriton ready (shim + prebuilt gfx1151 kernel images)"
 }
 
 # =============================================================================
