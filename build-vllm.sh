@@ -2049,6 +2049,21 @@ PY
 build_torchvision() {
     log_step 13 "Build TorchVision (against source-built PyTorch)"
 
+    # THEROCK_CI_GENERIC_CPU=1: torchvision's own hipify step generates
+    # torchvision/csrc/vision_hip.cpp alongside the original vision.cpp,
+    # and both define vision::cuda_version() - "ld.lld: error: duplicate
+    # symbol: vision::cuda_version()". This is a genuine, currently
+    # unresolved upstream bug (pytorch/vision#9298, ROCm 6.2, same
+    # symptom), not anything specific to our flags or environment - AMD's
+    # own maintainers are tagged on that issue with no fix as of the
+    # report. TorchVision isn't a hard vLLM dependency for text-only
+    # inference (it's for multimodal/vision-language preprocessing) - skip
+    # rather than block the rest of the stack on an unresolved upstream bug.
+    if [[ "${THEROCK_CI_GENERIC_CPU:-0}" == "1" ]]; then
+        info "THEROCK_CI_GENERIC_CPU=1: skipping TorchVision (unresolved upstream duplicate-symbol bug, pytorch/vision#9298 - not a hard vLLM dependency for text-only inference)"
+        return 0
+    fi
+
     cd "${TORCHVISION_SRC}"
 
     # Check if already built
