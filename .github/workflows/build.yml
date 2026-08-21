@@ -42,7 +42,9 @@ jobs:
           libvulkan-dev mesa-vulkan-drivers python3-dev python3-pip python3-venv \
           build-essential lsb-release procps \
           libgl1-mesa-dev libglx-dev libopengl-dev libsqlite3-dev libdrm-dev \
-          protobuf-compiler libprotobuf-dev libsleef-dev
+          protobuf-compiler libprotobuf-dev libsleef-dev \
+          libbz2-dev liblzma-dev libreadline-dev libncursesw5-dev libffi-dev \
+          zlib1g-dev uuid-dev libssl-dev tk-dev
 
     - name: Install Clang 21 (TheRock/vLLM build requires >= 21)
       run: |
