@@ -2291,13 +2291,33 @@ build_aotriton() {
     info "CFLAGS=${CFLAGS}"
     info "CMAKE_CXX_FLAGS_RELEASE=${CMAKE_CXX_FLAGS_RELEASE}"
 
+    # AOTRITON_USE_LOCAL_TRITON_WHEEL: AOTriton's own third_party/triton
+    # subproject build hard-fails at cmake configure time -
+    # "MLIRConfig.cmake set MLIR_FOUND to FALSE... missing: LLVMNVPTXCodeGen
+    # LLVMNVPTXDesc LLVMNVPTXInfo" - Triton core (NVWS dialect TableGen)
+    # requires the nvidia backend even for AMD-only builds, but the
+    # prebuilt LLVM Triton's own build system downloads for this pin lacks
+    # NVPTX codegen. Root cause matches ROCm/aotriton#166 (CMAKE_PREFIX_PATH
+    # containing TheRock/ROCm confuses Triton's own find_package(MLIR)
+    # resolution when building as an AOTriton subproject) - the upstream-
+    # documented workaround is this flag, which skips AOTriton's own
+    # vendored triton build entirely and installs our already-built wheel
+    # (step 15 succeeded cleanly) instead.
+    local _triton_wheel_for_aotriton
+    _triton_wheel_for_aotriton="$(newest_wheel "${WHEELS_DIR}"/triton*.whl)"
+    if [[ -z "${_triton_wheel_for_aotriton}" ]]; then
+        die "No triton wheel found in ${WHEELS_DIR} for AOTRITON_USE_LOCAL_TRITON_WHEEL — run step 15 first"
+    fi
+    info "AOTRITON_USE_LOCAL_TRITON_WHEEL=${_triton_wheel_for_aotriton}"
+
     cmake -B build -GNinja . \
         -DCMAKE_INSTALL_PREFIX="${LOCAL_PREFIX}" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_COMPILER="${CC}" \
         -DCMAKE_CXX_COMPILER="${CXX}" \
         -DAOTRITON_GPU_BUILD_TIMEOUT=0 \
-        -DAOTRITON_TARGET_ARCH="gfx1151"
+        -DAOTRITON_TARGET_ARCH="gfx1151" \
+        -DAOTRITON_USE_LOCAL_TRITON_WHEEL="${_triton_wheel_for_aotriton}"
 
     ninja -C build install/strip
 
